@@ -1,0 +1,11 @@
+node_modules
+.env
+dist
+*.pem
+*.key
+private*
+.DS_Store
+*.log
+coverage
+.vercel
+tsconfig.tsbuildinfo
