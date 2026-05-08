@@ -40,7 +40,7 @@ export class AuthController {
 
   @Post('check-availability')
   async checkAvailability(@Body() dto: CheckAvailabilityDto) {
-    return this.authService.checkAvailability(dto.email, dto.phone);
+    return this.authService.checkAvailability(dto.email, dto.phone, dto.gstin);
   }
 
   @Post('login')

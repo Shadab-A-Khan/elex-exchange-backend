@@ -76,7 +76,6 @@ export class WhatsappService {
       }
 
       const data = await response.json() as { sid: string };
-      console.log(`[WhatsApp OTP] Sent to ${to}: ${otp} (SID: ${data.sid})`);
       this.logger.log(`WhatsApp OTP sent to ${to}, SID: ${data.sid}`);
       return true;
     } catch (error) {

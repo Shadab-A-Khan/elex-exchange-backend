@@ -1,4 +1,7 @@
-import { Injectable, Logger, UnauthorizedException, ConflictException } from '@nestjs/common';
+import {
+  Injectable, Logger, UnauthorizedException, ConflictException,
+  BadRequestException, NotFoundException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { DatabaseService } from '../database/database.service';
@@ -52,7 +55,7 @@ export class AuthService {
       [identifier, channel, purpose],
     );
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otp = crypto.randomInt(100000, 1000000).toString();
 
     await this.databaseService.query(
       `INSERT INTO otp_verifications (user_id, identifier, channel, otp_code, purpose, expires_at)
@@ -133,50 +136,110 @@ export class AuthService {
   }
 
   // ─── Register ──────────────────────────────────────────────────────
+  //
+  // Transaction-wrapped INSERT across three tables:
+  //
+  //   1. users                — auth shell (email, password_hash, names, phone)
+  //   2. trader_profiles      — business identity (company_name, trader_code)
+  //   3. company_gstins       — primary GSTIN, only if supplied
+  //
+  // Why a transaction: a half-registered trader (users without
+  // trader_profiles) was the previous shipping bug. All three writes commit
+  // together or roll back together.
+  //
+  // Why SET LOCAL app.current_user_role = 'SUPER_ADMIN':
+  // RLS on trader_profiles + company_gstins requires either an admin role
+  // or `user_id = current_user_id()`. During register `current_user_id()`
+  // is NULL (no session set), so without elevation the second + third
+  // INSERTs would be rejected. SET LOCAL scopes the elevation to this
+  // transaction only — it auto-reverts on COMMIT or ROLLBACK.
 
   async register(registerDto: RegisterDto) {
-    const { email, password, firstName, lastName, whatsappNo } = registerDto;
+    const { email, password, firstName, lastName, whatsappNo, gstin } = registerDto;
+    const companyName = registerDto.companyName.trim();
 
-    const finalPassword =
-      password || crypto.randomBytes(16).toString('hex');
+    const finalPassword = password || crypto.randomBytes(16).toString('hex');
     const hashedPassword = await bcrypt.hash(finalPassword, 10);
+    const traderCode = `TRD-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
 
-    const result = await this.databaseService.query(
-      `INSERT INTO users (email, password_hash, first_name, last_name, role, phone, phone_verified)
-       VALUES ($1, $2, $3, $4, 'TRADER', $5, $6)
-       RETURNING id, email, role`,
-      [
-        email,
-        hashedPassword,
-        firstName || null,
-        lastName || null,
-        whatsappNo || null,
-        whatsappNo ? true : false,
-      ],
-    );
+    const client = await this.databaseService.getClient();
+    let userRow: { id: string; email: string; role: string };
 
-    const user = result.rows[0];
-
-    // Send welcome email (non-blocking — registration succeeds even if email fails)
     try {
-      const loginUrl = this.configService.get<string>('CORS_ORIGIN')?.split(',').find((u: string) => u.includes('3002')) || 'http://localhost:3002';
-      const traderName = firstName || email;
-      const businessName = registerDto.companyName || (firstName ? `${firstName}'s Business` : email);
+      await client.query('BEGIN');
+      // Bypass RLS for the registration sequence. Auto-reverts on COMMIT/ROLLBACK.
+      await client.query(`SET LOCAL app.current_user_role = 'SUPER_ADMIN'`);
 
-      if (password) {
-        // User-supplied password — send standard welcome email.
-        await this.mailService.sendWelcomeEmail({
-          to: email,
-          traderName,
-          businessName,
-          loginUrl: `${loginUrl}/login`,
-        });
-      } else {
-        // Server-generated password — send credentials email so user can log in.
+      // 1. users
+      const usersRes = await client.query(
+        `INSERT INTO users (email, password_hash, first_name, last_name, role, phone, phone_verified)
+         VALUES ($1, $2, $3, $4, 'TRADER', $5, $6)
+         RETURNING id, email, role`,
+        [
+          email,
+          hashedPassword,
+          firstName || null,
+          lastName || null,
+          whatsappNo || null,
+          whatsappNo ? true : false,
+        ],
+      );
+      userRow = usersRes.rows[0];
+
+      // 2. trader_profiles
+      const profileRes = await client.query(
+        `INSERT INTO trader_profiles (user_id, trader_code, company_name, whatsapp_number)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id`,
+        [userRow.id, traderCode, companyName, whatsappNo || null],
+      );
+      const traderProfileId: string = profileRes.rows[0].id;
+
+      // 3. company_gstins (now required — DTO enforces non-empty + format).
+      // Stored upper-case for consistency with the DB CHECK regex.
+      await client.query(
+        `INSERT INTO company_gstins (trader_profile_id, gstin, is_primary)
+         VALUES ($1, $2, TRUE)`,
+        [traderProfileId, gstin.trim().toUpperCase()],
+      );
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      // Surface 23505 unique violation as ConflictException for clean 409s.
+      // Includes: users.email, users.phone, trader_profiles.trader_code,
+      // company_gstins.gstin.
+      if (
+        err && typeof err === 'object' && 'code' in err &&
+        (err as { code?: string }).code === '23505'
+      ) {
+        const detail = (err as { detail?: string }).detail ?? '';
+        if (detail.includes('email')) throw new ConflictException('Email already registered');
+        if (detail.includes('phone')) throw new ConflictException('Phone already registered');
+        if (detail.includes('gstin')) throw new ConflictException('GSTIN already registered');
+        throw new ConflictException('Account already exists');
+      }
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    // Welcome email (non-blocking — registration succeeds even if mail fails)
+    try {
+      const loginUrl =
+        this.configService.get<string>('CORS_ORIGIN')?.split(',').find((u: string) => u.includes('3002'))
+        || 'http://localhost:3002';
+      const traderName = firstName || email;
+
+      if (!password) {
+        // No password supplied by caller — backend auto-generated one.
+        // Include it in the welcome email so the user has their credentials.
+        // When the frontend provides a password it sends the credentials email
+        // itself via /mail/send-welcome-credentials after auto sign-in.
         await this.mailService.sendWelcomeCredentialsEmail({
           to: email,
           traderName,
-          businessName,
+          businessName: companyName,
           email,
           password: finalPassword,
           loginUrl: `${loginUrl}/login`,
@@ -188,7 +251,7 @@ export class AuthService {
 
     return {
       message: 'User registered successfully',
-      user,
+      user: userRow,
     };
   }
 
@@ -205,8 +268,18 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired OTP');
     }
 
+    // LEFT JOINs so a user without a trader_profile (e.g. legacy rows
+    // from before the register fix) still authenticates — they just get
+    // company_name / gstin = null. Same for users without a primary GSTIN.
     const result = await this.databaseService.query(
-      'SELECT id, email, role FROM users WHERE phone = $1',
+      `SELECT
+         u.id, u.email, u.role, u.status, u.first_name, u.last_name, u.phone, u.email_verified,
+         tp.company_name,
+         cg.gstin
+       FROM users u
+       LEFT JOIN trader_profiles tp ON tp.user_id = u.id
+       LEFT JOIN company_gstins cg ON cg.trader_profile_id = tp.id AND cg.is_primary = TRUE
+       WHERE u.phone = $1`,
       [whatsappNo],
     );
 
@@ -216,46 +289,8 @@ export class AuthService {
 
     const user = result.rows[0];
 
-    // Record last_login timestamp (non-critical — don't fail login if this errors)
-    await this.databaseService
-      .query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id])
-      .catch((err) => console.error('Failed to update last_login', err));
-
-    const payload = {
-      sub: user.id,
-      email: user.email,
-      role: user.role,
-    };
-
-    return {
-      access_token: this.jwtService.sign(payload),
-      user: {
-        id: user.id,
-        email: user.email,
-        role: user.role,
-      },
-    };
-  }
-
-  // ─── Login with email/password ─────────────────────────────────────
-
-  async login(loginDto: LoginDto) {
-    const { email, password } = loginDto;
-
-    const result = await this.databaseService.query(
-      'SELECT id, email, password_hash, role, first_name, last_name FROM users WHERE email = $1',
-      [email],
-    );
-
-    if (!result.rows.length) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
-    const user = result.rows[0];
-    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
+    if (user.status === 'SUSPENDED') {
+      throw new UnauthorizedException('Your account has been suspended. Please contact support.');
     }
 
     // Record last_login timestamp (non-critical — don't fail login if this errors)
@@ -277,6 +312,69 @@ export class AuthService {
         role: user.role,
         firstName: user.first_name,
         lastName: user.last_name,
+        phone: user.phone,
+        emailVerified: user.email_verified,
+        companyName: user.company_name,
+        gstin: user.gstin,
+      },
+    };
+  }
+
+  // ─── Login with email/password ─────────────────────────────────────
+
+  async login(loginDto: LoginDto) {
+    const { email, password } = loginDto;
+
+    const result = await this.databaseService.query(
+      `SELECT
+         u.id, u.email, u.password_hash, u.role, u.status, u.first_name, u.last_name, u.phone, u.email_verified,
+         tp.company_name,
+         cg.gstin
+       FROM users u
+       LEFT JOIN trader_profiles tp ON tp.user_id = u.id
+       LEFT JOIN company_gstins cg ON cg.trader_profile_id = tp.id AND cg.is_primary = TRUE
+       WHERE u.email = $1`,
+      [email],
+    );
+
+    if (!result.rows.length) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    const user = result.rows[0];
+    const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+
+    if (!isPasswordValid) {
+      throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (user.status === 'SUSPENDED') {
+      throw new UnauthorizedException('Your account has been suspended. Please contact support.');
+    }
+
+    // Record last_login timestamp (non-critical — don't fail login if this errors)
+    await this.databaseService
+      .query('UPDATE users SET last_login = NOW() WHERE id = $1', [user.id])
+      .catch((err) => console.error('Failed to update last_login', err));
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      role: user.role,
+    };
+
+    return {
+      access_token: this.jwtService.sign(payload),
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        phone: user.phone,
+        emailVerified: user.email_verified,
+        companyName: user.company_name,
+        gstin: user.gstin,
       },
     };
   }
@@ -287,12 +385,12 @@ export class AuthService {
     const { method, email, whatsappNo } = dto;
 
     if (method === 'email') {
-      if (!email) throw new Error('Email is required');
+      if (!email) throw new BadRequestException('Email is required');
       const result = await this.databaseService.query(
         'SELECT id, first_name FROM users WHERE email = $1',
         [email],
       );
-      if (!result.rows.length) throw new Error('No account found with this email');
+      if (!result.rows.length) throw new UnauthorizedException('No account found with this email');
 
       const otp = await this.createOtp(email, 'EMAIL', 'PASSWORD_RESET', result.rows[0].id);
 
@@ -311,12 +409,12 @@ export class AuthService {
       return { message: 'OTP sent successfully', method, identifier: email };
     }
 
-    if (!whatsappNo) throw new Error('WhatsApp number is required');
+    if (!whatsappNo) throw new BadRequestException('WhatsApp number is required');
     const result = await this.databaseService.query(
       'SELECT id FROM users WHERE phone = $1',
       [whatsappNo],
     );
-    if (!result.rows.length) throw new Error('No account found with this WhatsApp number');
+    if (!result.rows.length) throw new UnauthorizedException('No account found with this WhatsApp number');
 
     const otp = await this.createOtp(whatsappNo, 'WHATSAPP', 'PASSWORD_RESET', result.rows[0].id);
 
@@ -333,10 +431,10 @@ export class AuthService {
     const identifier = method === 'email' ? email : whatsappNo;
     const channel: OtpChannel = method === 'email' ? 'EMAIL' : 'WHATSAPP';
 
-    if (!identifier) throw new Error(`${method === 'email' ? 'Email' : 'WhatsApp number'} is required`);
+    if (!identifier) throw new BadRequestException(`${method === 'email' ? 'Email' : 'WhatsApp number'} is required`);
 
     const isValid = await this.checkOtp(identifier, channel, 'PASSWORD_RESET', otp, true);
-    if (!isValid) throw new Error('Invalid or expired OTP');
+    if (!isValid) throw new UnauthorizedException('Invalid or expired OTP');
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
@@ -347,15 +445,19 @@ export class AuthService {
       [hashedPassword, identifier],
     );
 
-    if (!result.rows.length) throw new Error('Failed to update password');
+    if (!result.rows.length) throw new BadRequestException('Failed to update password');
 
     return { message: 'Password updated successfully' };
   }
 
   // ─── Availability check ────────────────────────────────────────────
 
-  async checkAvailability(email?: string, phone?: string) {
-    const result: { emailAvailable?: boolean; phoneAvailable?: boolean } = {};
+  async checkAvailability(email?: string, phone?: string, gstin?: string) {
+    const result: {
+      emailAvailable?: boolean;
+      phoneAvailable?: boolean;
+      gstinAvailable?: boolean;
+    } = {};
 
     if (email) {
       const emailResult = await this.databaseService.query(
@@ -373,6 +475,17 @@ export class AuthService {
       result.phoneAvailable = phoneResult.rows.length === 0;
     }
 
+    if (gstin) {
+      // GSTIN lives on company_gstins, FK-linked to trader_profiles. Stored
+      // upper-case server-side; uppercase the input so we don't miss
+      // dupes from case-only differences.
+      const gstinResult = await this.databaseService.query(
+        'SELECT id FROM company_gstins WHERE gstin = $1',
+        [gstin.toUpperCase()],
+      );
+      result.gstinAvailable = gstinResult.rows.length === 0;
+    }
+
     return result;
   }
 
@@ -385,7 +498,7 @@ export class AuthService {
     );
 
     if (!result.rows.length) {
-      throw new Error('User not found');
+      throw new UnauthorizedException('User not found');
     }
 
     return result.rows[0];
@@ -397,7 +510,7 @@ export class AuthService {
       'SELECT email, first_name FROM users WHERE id = $1',
       [userId],
     );
-    if (!result.rows.length) throw new Error('User not found');
+    if (!result.rows.length) throw new NotFoundException('User not found');
     const currentEmail = result.rows[0].email;
     const firstName = result.rows[0].first_name;
 
@@ -429,7 +542,7 @@ export class AuthService {
   // ─── Email Change: Step 2 — Verify current email OTP, send OTP to new email
   async changeEmailVerifyCurrent(userId: string, dto: ChangeEmailVerifyCurrentDto) {
     const isValid = await this.checkOtp(`email-change-current:${userId}`, 'EMAIL', 'REGISTRATION', dto.otp, true);
-    if (!isValid) throw new Error('Invalid or expired OTP');
+    if (!isValid) throw new UnauthorizedException('Invalid or expired OTP');
 
     // Check new email is still available
     const existing = await this.databaseService.query(
@@ -458,7 +571,7 @@ export class AuthService {
   // ─── Email Change: Step 3 — Verify new email OTP, update email in DB ─
   async changeEmailVerifyNew(userId: string, dto: ChangeEmailVerifyNewDto) {
     const isValid = await this.checkOtp(`email-change-new:${userId}`, 'EMAIL', 'REGISTRATION', dto.otp, true);
-    if (!isValid) throw new Error('Invalid or expired OTP');
+    if (!isValid) throw new UnauthorizedException('Invalid or expired OTP');
 
     // Final check — email still available
     const existing = await this.databaseService.query(
@@ -472,26 +585,28 @@ export class AuthService {
       'UPDATE users SET email = $1 WHERE id = $2 RETURNING id, email',
       [dto.newEmail, userId],
     );
-    if (!result.rows.length) throw new Error('Failed to update email');
+    if (!result.rows.length) throw new BadRequestException('Failed to update email');
 
     return { message: 'Email updated successfully', email: result.rows[0].email };
   }
 
   // ─── Phone Change: Step 1 — Send OTP to current phone ─────
-  async changePhoneSendOtp(userId: string, dto: ChangePhoneSendOtpDto) {
+  async changePhoneSendOtp(userId: string, _dto: ChangePhoneSendOtpDto) {
     const result = await this.databaseService.query(
       'SELECT phone FROM users WHERE id = $1',
       [userId],
     );
-    if (!result.rows.length) throw new Error('User not found');
+    if (!result.rows.length) throw new NotFoundException('User not found');
     const currentPhone = result.rows[0].phone;
-    if (!currentPhone) throw new Error('No phone number on file');
+    if (!currentPhone) throw new BadRequestException('No phone number on file');
 
     const otp = await this.createOtp(`phone-change-current:${userId}`, 'WHATSAPP', 'REGISTRATION', userId);
 
     await this.whatsappService.sendOtp(currentPhone, otp);
     this.logger.log(`Phone change OTP sent to current phone ${currentPhone}`);
-    this.logger.warn(`[DEV] Phone change OTP for ${currentPhone}: ${otp}`);
+    if (process.env.NODE_ENV !== 'production') {
+      this.logger.warn(`[DEV] Phone change OTP for ${currentPhone}: ${otp}`);
+    }
 
     return { message: 'OTP sent to your current phone number', currentPhone };
   }
@@ -499,7 +614,7 @@ export class AuthService {
   // ─── Phone Change: Step 2 — Verify current phone, send OTP to new phone
   async changePhoneVerifyCurrent(userId: string, dto: ChangePhoneVerifyCurrentDto) {
     const isValid = await this.checkOtp(`phone-change-current:${userId}`, 'WHATSAPP', 'REGISTRATION', dto.otp, true);
-    if (!isValid) throw new Error('Invalid or expired OTP');
+    if (!isValid) throw new UnauthorizedException('Invalid or expired OTP');
 
     const existing = await this.databaseService.query(
       'SELECT id FROM users WHERE phone = $1 AND id != $2',
@@ -511,7 +626,9 @@ export class AuthService {
 
     await this.whatsappService.sendOtp(dto.newPhone, otp);
     this.logger.log(`Phone change OTP sent to new phone ${dto.newPhone}`);
-    this.logger.warn(`[DEV] Phone change OTP for ${dto.newPhone}: ${otp}`);
+    if (process.env.NODE_ENV !== 'production') {
+      this.logger.warn(`[DEV] Phone change OTP for ${dto.newPhone}: ${otp}`);
+    }
 
     return { message: 'Current phone verified. OTP sent to your new phone number.' };
   }
@@ -519,7 +636,7 @@ export class AuthService {
   // ─── Phone Change: Step 3 — Verify new phone OTP, update phone in DB
   async changePhoneVerifyNew(userId: string, dto: ChangePhoneVerifyNewDto) {
     const isValid = await this.checkOtp(`phone-change-new:${userId}`, 'WHATSAPP', 'REGISTRATION', dto.otp, true);
-    if (!isValid) throw new Error('Invalid or expired OTP');
+    if (!isValid) throw new UnauthorizedException('Invalid or expired OTP');
 
     const existing = await this.databaseService.query(
       'SELECT id FROM users WHERE phone = $1 AND id != $2',
@@ -531,7 +648,7 @@ export class AuthService {
       'UPDATE users SET phone = $1, phone_verified = TRUE WHERE id = $2 RETURNING id, phone',
       [dto.newPhone, userId],
     );
-    if (!result.rows.length) throw new Error('Failed to update phone');
+    if (!result.rows.length) throw new BadRequestException('Failed to update phone');
 
     return { message: 'Phone number updated successfully', phone: result.rows[0].phone };
   }
@@ -542,8 +659,10 @@ export class AuthService {
       'SELECT email, email_verified, first_name FROM users WHERE id = $1',
       [userId],
     );
-    if (!result.rows.length) throw new Error('User not found');
-    if (result.rows[0].email_verified) throw new Error('Email is already verified');
+    if (!result.rows.length) throw new NotFoundException('User not found');
+    if (result.rows[0].email_verified) {
+      throw new BadRequestException('Email is already verified');
+    }
 
     const email = result.rows[0].email;
     const firstName = result.rows[0].first_name;
@@ -562,19 +681,26 @@ export class AuthService {
       this.logger.warn('Email verification OTP send failed', emailError);
     }
 
+    // Dev-only: surface the OTP in the backend log so local testers can
+    // complete the flow without a working SendGrid key. Mirrors the same
+    // pattern in changePhoneSendOtp / changePhoneVerifyCurrent.
+    if (process.env.NODE_ENV !== 'production') {
+      this.logger.warn(`[DEV] Email verification OTP for ${email}: ${otp}`);
+    }
+
     return { message: 'Verification OTP sent to your email', email };
   }
 
   // ─── Email Verification: Verify OTP and mark email as verified ─
   async verifyEmailConfirm(userId: string, dto: VerifyEmailOtpDto) {
     const isValid = await this.checkOtp(`verify-email:${userId}`, 'EMAIL', 'REGISTRATION', dto.otp, true);
-    if (!isValid) throw new Error('Invalid or expired OTP');
+    if (!isValid) throw new UnauthorizedException('Invalid or expired OTP');
 
     const result = await this.databaseService.query(
       'UPDATE users SET email_verified = true WHERE id = $1 RETURNING id, email, email_verified',
       [userId],
     );
-    if (!result.rows.length) throw new Error('Failed to verify email');
+    if (!result.rows.length) throw new NotFoundException('User not found');
 
     return { message: 'Email verified successfully', emailVerified: true };
   }
