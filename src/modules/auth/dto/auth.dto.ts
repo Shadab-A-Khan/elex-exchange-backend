@@ -190,6 +190,7 @@ export class VerifyEmailOtpDto {
 
 export class ChangePhoneSendOtpDto {
   @IsString()
+  @Matches(PHONE_REGEX, { message: 'newPhone must be 7–15 digits, optionally prefixed with +' })
   newPhone!: string;
 }
 
@@ -198,6 +199,7 @@ export class ChangePhoneVerifyCurrentDto {
   otp!: string;
 
   @IsString()
+  @Matches(PHONE_REGEX, { message: 'newPhone must be 7–15 digits, optionally prefixed with +' })
   newPhone!: string;
 }
 
@@ -206,5 +208,6 @@ export class ChangePhoneVerifyNewDto {
   otp!: string;
 
   @IsString()
+  @Matches(PHONE_REGEX, { message: 'newPhone must be 7–15 digits, optionally prefixed with +' })
   newPhone!: string;
 }

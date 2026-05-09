@@ -23,7 +23,7 @@ class EnvironmentVariables {
   ELEX_JWT_SECRET: string = 'change_this_to_a_long_random_string';
 
   @IsNumber()
-  ELEX_JWT_EXPIRATION: number = 86400;
+  ELEX_JWT_EXPIRATION: number = 3600;
 
   // CORS
   @IsString()
@@ -65,6 +65,13 @@ export function validate(config: Record<string, unknown>) {
 
   if (errors.length > 0) {
     throw new Error(errors.toString());
+  }
+
+  if (
+    validatedConfig.NODE_ENV === Environment.Production &&
+    validatedConfig.ELEX_JWT_SECRET === 'change_this_to_a_long_random_string'
+  ) {
+    throw new Error('ELEX_JWT_SECRET must be set to a real secret in production');
   }
 
   return validatedConfig;

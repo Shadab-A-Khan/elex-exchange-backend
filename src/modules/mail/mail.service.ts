@@ -179,8 +179,8 @@ export class MailService implements OnModuleInit {
   ): Promise<void> {
     const isActive = payload.status === 'ACTIVE';
     const dashboardUrl =
-      this.configService.get<string>('CORS_ORIGIN')?.split(',').find((u: string) => u.includes('3002')) ||
-      'http://localhost:3002';
+      this.configService.get<string>('CORS_ORIGIN')?.split(',').find((u: string) => u.includes('3003')) ||
+      'http://localhost:3003';
 
     const ctx: AccountStatusEmailContext = {
       name: payload.name,

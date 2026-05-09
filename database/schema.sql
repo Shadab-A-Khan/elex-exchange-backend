@@ -110,6 +110,8 @@ CREATE TYPE product_status AS ENUM ('DRAFT', 'ACTIVE', 'INACTIVE', 'DISCONTINUED
 CREATE TYPE listing_intent AS ENUM ('WTS', 'WTB');
 CREATE TYPE listing_stock_type AS ENUM ('MASTER_CARTON', 'LOOSE_ACTIVATED', 'LOOSE_NON_ACTIVATED');
 CREATE TYPE listing_status AS ENUM ('DRAFT', 'ACTIVE', 'PAUSED', 'CLOSED', 'EXPIRED');
+CREATE TYPE listing_condition AS ENUM ('SEALED', 'NEW', 'OPEN_BOX', 'REFURBISHED');
+CREATE TYPE spec_region AS ENUM ('INDIA', 'GLOBAL');
 
 -- ============================================================================
 -- TABLE: users
@@ -457,17 +459,22 @@ CREATE TABLE listings (
   listing_code VARCHAR(20) NOT NULL UNIQUE,
   trader_profile_id UUID NOT NULL REFERENCES trader_profiles(id) ON DELETE CASCADE,
   intent listing_intent NOT NULL,
-  product_id UUID NOT NULL REFERENCES products(id),
+  -- Free-text product name entered by the trader (e.g. "Apple iPhone 17 256GB")
+  product_name TEXT NOT NULL,
+  -- Normalized catalog refs — optional; populated when product exists in catalog
+  product_id UUID REFERENCES products(id),
   variant_id UUID REFERENCES product_variants(id),
-  category_id UUID NOT NULL REFERENCES product_categories(id),
+  category_id UUID REFERENCES product_categories(id),
   brand_id UUID REFERENCES brands(id),
+  condition listing_condition,
+  spec_region spec_region,
   stock_type listing_stock_type NOT NULL DEFAULT 'MASTER_CARTON',
   quantity INT NOT NULL,
   moq_units INT,
   price_per_unit DECIMAL(12, 2),
   currency CHAR(3) NOT NULL DEFAULT 'INR',
-  city VARCHAR(100) NOT NULL,
-  state VARCHAR(100) NOT NULL,
+  city VARCHAR(100),
+  state VARCHAR(100),
   pincode CHAR(6),
   description TEXT,
   image_urls TEXT[],

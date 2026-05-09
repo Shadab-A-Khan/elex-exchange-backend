@@ -19,7 +19,7 @@ import { WhatsappModule } from '../whatsapp/whatsapp.module';
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => ({
         secret: configService.get('ELEX_JWT_SECRET'),
-        signOptions: { expiresIn: configService.get('ELEX_JWT_EXPIRATION', 86400) },
+        signOptions: { expiresIn: configService.get('ELEX_JWT_EXPIRATION', 3600) },
       }),
     }),
   ],
