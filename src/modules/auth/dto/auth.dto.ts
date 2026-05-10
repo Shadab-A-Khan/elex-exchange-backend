@@ -56,6 +56,13 @@ export class RegisterDto {
     message: 'Enter a valid 15-character GSTIN',
   })
   gstin!: string;
+
+  // City of the trader's primary business location. State is derived
+  // server-side from the GSTIN prefix so the client only needs to send city.
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  city?: string;
 }
 
 // Phone format used wherever the API accepts a number — 7–15 digits with

@@ -9,6 +9,22 @@ import { MailService } from '../mail/mail.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
+
+const GSTIN_STATE_MAP: Record<string, string> = {
+  '01': 'Jammu & Kashmir', '02': 'Himachal Pradesh', '03': 'Punjab',
+  '04': 'Chandigarh', '05': 'Uttarakhand', '06': 'Haryana', '07': 'Delhi',
+  '08': 'Rajasthan', '09': 'Uttar Pradesh', '10': 'Bihar', '11': 'Sikkim',
+  '12': 'Arunachal Pradesh', '13': 'Nagaland', '14': 'Manipur',
+  '15': 'Mizoram', '16': 'Tripura', '17': 'Meghalaya', '18': 'Assam',
+  '19': 'West Bengal', '20': 'Jharkhand', '21': 'Odisha',
+  '22': 'Chhattisgarh', '23': 'Madhya Pradesh', '24': 'Gujarat',
+  '25': 'Daman & Diu', '26': 'Dadra & Nagar Haveli', '27': 'Maharashtra',
+  '28': 'Andhra Pradesh', '29': 'Karnataka', '30': 'Goa',
+  '31': 'Lakshadweep', '32': 'Kerala', '33': 'Tamil Nadu',
+  '34': 'Puducherry', '35': 'Andaman & Nicobar Islands', '36': 'Telangana',
+  '37': 'Andhra Pradesh', '38': 'Ladakh', '97': 'Other Territory',
+  '99': 'Centre Jurisdiction',
+};
 import {
   LoginDto,
   LoginOtpDto,
@@ -157,6 +173,8 @@ export class AuthService {
   async register(registerDto: RegisterDto) {
     const { email, password, firstName, lastName, whatsappNo, gstin } = registerDto;
     const companyName = registerDto.companyName.trim();
+    const city  = registerDto.city?.trim() || null;
+    const state = GSTIN_STATE_MAP[gstin.trim().slice(0, 2)] ?? null;
 
     const finalPassword = password || crypto.randomBytes(16).toString('hex');
     const hashedPassword = await bcrypt.hash(finalPassword, 10);
@@ -186,12 +204,12 @@ export class AuthService {
       );
       userRow = usersRes.rows[0];
 
-      // 2. trader_profiles
+      // 2. trader_profiles — city supplied by client, state derived from GSTIN prefix
       const profileRes = await client.query(
-        `INSERT INTO trader_profiles (user_id, trader_code, company_name, whatsapp_number)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO trader_profiles (user_id, trader_code, company_name, whatsapp_number, city, state)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING id`,
-        [userRow.id, traderCode, companyName, whatsappNo || null],
+        [userRow.id, traderCode, companyName, whatsappNo || null, city, state],
       );
       const traderProfileId: string = profileRes.rows[0].id;
 

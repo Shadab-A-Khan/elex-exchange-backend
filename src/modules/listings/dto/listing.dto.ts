@@ -1,29 +1,22 @@
-import { IsEnum, IsInt, IsNumber, IsOptional, IsString, Length, Min } from 'class-validator';
+import { IsEnum, IsInt, IsNumber, IsOptional, IsString, IsUUID, Length, Min } from 'class-validator';
 
 export enum ListingIntent {
   WTS = 'WTS',
   WTB = 'WTB',
 }
 
-export enum ListingCondition {
-  SEALED       = 'SEALED',
-  NEW          = 'NEW',
-  OPEN_BOX     = 'OPEN_BOX',
-  REFURBISHED  = 'REFURBISHED',
-}
-
-export enum SpecRegion {
-  INDIA  = 'INDIA',
-  GLOBAL = 'GLOBAL',
+export enum ListingStockType {
+  MASTER_CARTON       = 'MASTER_CARTON',
+  LOOSE_ACTIVATED     = 'LOOSE_ACTIVATED',
+  LOOSE_NON_ACTIVATED = 'LOOSE_NON_ACTIVATED',
 }
 
 export class CreateListingDto {
   @IsEnum(ListingIntent)
   intent!: ListingIntent;
 
-  @IsString()
-  @Length(1, 500)
-  product_name!: string;
+  @IsUUID()
+  variant_id!: string;
 
   @IsInt()
   @Min(1)
@@ -38,13 +31,9 @@ export class CreateListingDto {
   @Length(3, 3)
   currency!: string;
 
-  @IsEnum(ListingCondition)
+  @IsEnum(ListingStockType)
   @IsOptional()
-  condition?: ListingCondition;
-
-  @IsEnum(SpecRegion)
-  @IsOptional()
-  spec_region?: SpecRegion;
+  stock_type?: ListingStockType;
 
   @IsString()
   @IsOptional()
