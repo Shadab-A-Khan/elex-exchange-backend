@@ -33,13 +33,4 @@ export class DatabaseService {
     await this.pool.end();
   }
 
-  async setContextUser(userId: string, role: string) {
-    const client = await this.getClient();
-    try {
-      await client.query(`SET app.current_user_id = '${userId}'`);
-      await client.query(`SET app.current_user_role = '${role}'`);
-    } finally {
-      client.release();
-    }
-  }
 }
