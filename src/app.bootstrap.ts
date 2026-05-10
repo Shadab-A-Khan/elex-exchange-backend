@@ -94,7 +94,7 @@ export async function createApp() {
     postgraphile(connectionString, 'public', {
       graphqlRoute: '/graphql',
       graphiqlRoute: '/graphiql',
-      graphiql: true,
+      graphiql: isDev,
       enhanceGraphiql: isDev,
       watchPg: isDev,
       dynamicJson: true,
