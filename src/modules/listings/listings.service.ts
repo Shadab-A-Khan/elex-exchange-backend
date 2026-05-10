@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
-import { CreateListingDto, ListingIntent, ListingStockType } from './dto/listing.dto';
+import { CreateListingDto, ListingIntent, ListingStockType, ListingUserStatus, UpdateListingDto } from './dto/listing.dto';
 
 @Injectable()
 export class ListingsService {
@@ -111,7 +111,7 @@ export class ListingsService {
       }
       if (vals.length) {
         const placeholders = vals.map((v) => { params.push(v); return `$${params.length}`; });
-        whereClauses.push(`l.stock_type = ANY(ARRAY[${placeholders.join(',')}])`);
+        whereClauses.push(`l.stock_type = ANY(ARRAY[${placeholders.join(',')}]::listing_stock_type[])`);
       }
     }
 
@@ -145,12 +145,14 @@ export class ListingsService {
          tp.trader_code,
          tp.whatsapp_number AS phone,
          tp.city,
-         tp.kyc_status
+         tp.kyc_status,
+         u.email           AS trader_email
        FROM listings l
        JOIN products p              ON p.id  = l.product_id
        LEFT JOIN brands b           ON b.id  = l.brand_id
        LEFT JOIN product_variants pv ON pv.id = l.variant_id
        JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       JOIN users u                 ON u.id  = tp.user_id
        WHERE ${whereClauses.join(' AND ')}
        ORDER BY l.created_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -173,14 +175,16 @@ export class ListingsService {
          tp.trader_code,
          tp.whatsapp_number AS phone,
          tp.city,
-         tp.kyc_status
+         tp.kyc_status,
+         u.email           AS trader_email
        FROM listings l
        JOIN products p              ON p.id  = l.product_id
        LEFT JOIN brands b           ON b.id  = l.brand_id
        LEFT JOIN product_variants pv ON pv.id = l.variant_id
        JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       JOIN users u                 ON u.id  = tp.user_id
        WHERE (l.id::text = $1 OR l.listing_code = $1)
-         AND l.status = 'ACTIVE' AND l.expires_at > NOW()`,
+         AND l.status IN ('ACTIVE', 'PAUSED') AND l.expires_at > NOW()`,
       [id],
     );
     if (!res.rows.length) throw new NotFoundException('Listing not found');
@@ -219,5 +223,70 @@ export class ListingsService {
       params,
     );
     return res.rows;
+  }
+
+  async findMine(userId: string) {
+    const res = await this.db.query(
+      `SELECT
+         l.id, l.listing_code, l.intent, l.stock_type,
+         l.quantity, l.price_per_unit, l.currency,
+         l.description, l.status, l.expires_at, l.created_at,
+         p.name            AS product_name,
+         b.name            AS brand_name,
+         pv.name           AS variant_name,
+         pv.variant_attributes
+       FROM listings l
+       JOIN products p              ON p.id  = l.product_id
+       LEFT JOIN brands b           ON b.id  = l.brand_id
+       LEFT JOIN product_variants pv ON pv.id = l.variant_id
+       JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       WHERE tp.user_id = $1
+       ORDER BY l.created_at DESC`,
+      [userId],
+    );
+    return res.rows;
+  }
+
+  async update(userId: string, role: string, id: string, dto: UpdateListingDto) {
+    const client = await this.db.getClient();
+    try {
+      await client.query('BEGIN');
+      await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
+      await client.query(`SELECT set_config('app.current_user_role', $1, true)`, [role]);
+
+      const existing = await client.query(
+        `SELECT l.id, tp.user_id FROM listings l
+         JOIN trader_profiles tp ON tp.id = l.trader_profile_id
+         WHERE (l.id::text = $1 OR l.listing_code = $1)`,
+        [id],
+      );
+      if (!existing.rows.length) throw new NotFoundException('Listing not found');
+      if (existing.rows[0].user_id !== userId) throw new ForbiddenException('Not your listing');
+
+      const sets: string[] = [];
+      const params: any[] = [];
+      if (dto.quantity !== undefined) { params.push(dto.quantity); sets.push(`quantity = $${params.length}`); }
+      if (dto.price_per_unit !== undefined) { params.push(dto.price_per_unit); sets.push(`price_per_unit = $${params.length}`); }
+      if (dto.currency !== undefined) { params.push(dto.currency); sets.push(`currency = $${params.length}`); }
+      if (dto.stock_type !== undefined) { params.push(dto.stock_type); sets.push(`stock_type = $${params.length}`); }
+      if (dto.description !== undefined) { params.push(dto.description); sets.push(`description = $${params.length}`); }
+      if (dto.status !== undefined) { params.push(dto.status); sets.push(`status = $${params.length}`); }
+      if (sets.length === 0) throw new BadRequestException('No updatable fields provided');
+
+      params.push(existing.rows[0].id);
+      const res = await client.query(
+        `UPDATE listings SET ${sets.join(', ')} WHERE id = $${params.length}
+         RETURNING id, listing_code, intent, stock_type, quantity, price_per_unit, currency, description, status, expires_at, created_at`,
+        params,
+      );
+
+      await client.query('COMMIT');
+      return res.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 }

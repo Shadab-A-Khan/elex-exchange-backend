@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Request, Res, HttpCode } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, UseGuards, Request, Res, HttpCode } from '@nestjs/common';
 import { Response } from 'express';
 import { Throttle, SkipThrottle } from '@nestjs/throttler';
 import { AuthService } from './auth.service';
@@ -8,6 +8,7 @@ import {
   LoginDto,
   LoginOtpDto,
   RegisterDto,
+  UpdateProfileDto,
   ResetPasswordSendOtpDto,
   ResetPasswordVerifyDto,
   SendOtpDto,
@@ -100,12 +101,16 @@ export class AuthController {
 
   @SkipThrottle()
   @UseGuards(JwtAuthGuard)
-  @Post('profile')
+  @Get('profile')
   async getProfile(@Request() req: any) {
-    return {
-      user: req.user,
-      message: 'Profile retrieved successfully',
-    };
+    return this.authService.getFullProfile(req.user.userId);
+  }
+
+  @SkipThrottle()
+  @UseGuards(JwtAuthGuard)
+  @Patch('profile')
+  async updateProfile(@Request() req: any, @Body() dto: UpdateProfileDto) {
+    return this.authService.updateProfile(req.user.userId, dto);
   }
 
   @SkipThrottle()

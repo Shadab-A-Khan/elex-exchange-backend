@@ -9,3 +9,6 @@ private*
 coverage
 .vercel
 tsconfig.tsbuildinfo
+
+# One-off seed scripts
+scripts/seed-apple-iphones.js

@@ -1,5 +1,28 @@
 import { IsEmail, IsString, MinLength, IsOptional, IsIn, IsNotEmpty, MaxLength, Matches } from 'class-validator';
 
+export class UpdateProfileDto {
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  state?: string;
+
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^[A-Za-zÀ-ɏ\s'\-\.&(),]+$/, {
+    message: 'companyName must contain only letters and common punctuation',
+  })
+  @MaxLength(200)
+  companyName?: string;
+}
+
 export class RegisterDto {
   @IsEmail()
   email!: string;
