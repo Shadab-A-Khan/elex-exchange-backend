@@ -1,10 +1,10 @@
 import {
-  Controller, Post, Get, Patch, Param, Body, Query,
+  Controller, Post, Get, Param, Body, Query,
   UseGuards, Request, ParseIntPipe, DefaultValuePipe,
 } from '@nestjs/common';
 import { SkipThrottle } from '@nestjs/throttler';
 import { ListingsService } from './listings.service';
-import { CreateListingDto, UpdateListingDto } from './dto/listing.dto';
+import { CreateListingDto } from './dto/listing.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
 @SkipThrottle()
@@ -50,23 +50,10 @@ export class ListingsController {
     );
   }
 
-  /** GET /listings/mine — JWT required, returns caller's own listings */
-  @UseGuards(JwtAuthGuard)
-  @Get('mine')
-  async findMine(@Request() req: any) {
-    return this.listingsService.findMine(req.user.userId);
-  }
-
   /** GET /listings/:id — public */
   @Get(':id')
   async findOne(@Param('id') id: string) {
     return this.listingsService.findOne(id);
   }
 
-  /** PATCH /listings/:id — JWT required, owner only */
-  @UseGuards(JwtAuthGuard)
-  @Patch(':id')
-  async update(@Request() req: any, @Param('id') id: string, @Body() dto: UpdateListingDto) {
-    return this.listingsService.update(req.user.userId, req.user.role, id, dto);
-  }
 }

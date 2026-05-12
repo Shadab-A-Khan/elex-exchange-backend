@@ -29,7 +29,6 @@ import {
   LoginDto,
   LoginOtpDto,
   RegisterDto,
-  UpdateProfileDto,
   ResetPasswordSendOtpDto,
   ResetPasswordVerifyDto,
   ChangeEmailSendOtpDto,
@@ -724,60 +723,4 @@ export class AuthService {
     return { message: 'Email verified successfully', emailVerified: true };
   }
 
-  async getFullProfile(userId: string) {
-    const res = await this.databaseService.query(
-      `SELECT u.id, u.email, u.role, u.first_name, u.last_name,
-         u.email_verified, u.phone,
-         tp.company_name, tp.city, tp.state,
-         tp.trader_code, tp.kyc_status, tp.whatsapp_number,
-         cg.gstin
-       FROM users u
-       LEFT JOIN trader_profiles tp ON tp.user_id = u.id
-       LEFT JOIN company_gstins cg ON cg.trader_profile_id = tp.id AND cg.is_primary = TRUE
-       WHERE u.id = $1`,
-      [userId],
-    );
-    if (!res.rows.length) throw new NotFoundException('User not found');
-    const r = res.rows[0];
-    return {
-      id: r.id,
-      email: r.email,
-      role: r.role,
-      firstName: r.first_name ?? null,
-      lastName: r.last_name ?? null,
-      emailVerified: r.email_verified ?? false,
-      phone: r.phone ?? r.whatsapp_number ?? null,
-      companyName: r.company_name ?? null,
-      city: r.city ?? null,
-      state: r.state ?? null,
-      traderCode: r.trader_code ?? null,
-      kycStatus: r.kyc_status ?? null,
-      gstin: r.gstin ?? null,
-    };
-  }
-
-  async updateProfile(userId: string, dto: UpdateProfileDto) {
-    const sets: string[] = [];
-    const params: any[] = [];
-    if (dto.city !== undefined) {
-      params.push(dto.city.trim());
-      sets.push(`city = $${params.length}`);
-    }
-    if (dto.state !== undefined) {
-      params.push(dto.state.trim());
-      sets.push(`state = $${params.length}`);
-    }
-    if (dto.companyName !== undefined) {
-      params.push(dto.companyName.trim());
-      sets.push(`company_name = $${params.length}`);
-    }
-    if (sets.length === 0) throw new BadRequestException('No updatable fields provided');
-    params.push(userId);
-    const res = await this.databaseService.query(
-      `UPDATE trader_profiles SET ${sets.join(', ')} WHERE user_id = $${params.length} RETURNING company_name, city, state`,
-      params,
-    );
-    if (!res.rows.length) throw new NotFoundException('Trader profile not found');
-    return res.rows[0];
-  }
 }
