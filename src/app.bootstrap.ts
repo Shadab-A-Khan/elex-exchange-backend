@@ -6,6 +6,7 @@ import express from 'express';
 import { ConfigService } from '@nestjs/config';
 import { postgraphile } from 'postgraphile';
 import ConnectionFilterPlugin from 'postgraphile-plugin-connection-filter';
+import * as jwt from 'jsonwebtoken';
 import { AppModule } from './app.module';
 
 export async function createApp() {
@@ -102,10 +103,25 @@ export async function createApp() {
       ignoreRBAC: false,
       legacyRelations: 'omit',
       enableQueryBatching: true,
-      // Read-only for now — admin doesn't need auto-mutations yet, and exposing
-      // them through GraphQL with no role check would be a footgun. Re-enable
-      // (and add a JWT/pgSettings hook for RLS) when admin write flows land.
-      disableDefaultMutations: true,
+      pgSettings: async (req: any) => {
+        const auth = (req.headers?.authorization ?? '') as string;
+        if (!auth.startsWith('Bearer ')) return {};
+        const token = auth.slice(7);
+        try {
+          const secret = configService.get<string>('ELEX_JWT_SECRET')!;
+          const payload = jwt.verify(token, secret) as unknown as {
+            sub: string;
+            role: string;
+          };
+          return {
+            'app.current_user_id':   payload.sub,
+            'app.current_user_role': payload.role,
+          };
+        } catch {
+          return {};
+        }
+      },
+      disableDefaultMutations: false,
       appendPlugins: [ConnectionFilterPlugin],
       // Surface DB errors verbatim in dev for easier debugging; trim in prod.
       extendedErrors: isDev
