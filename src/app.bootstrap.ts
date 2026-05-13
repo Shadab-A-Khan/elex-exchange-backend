@@ -6,6 +6,7 @@ import express from 'express';
 import { ConfigService } from '@nestjs/config';
 import { postgraphile } from 'postgraphile';
 import ConnectionFilterPlugin from 'postgraphile-plugin-connection-filter';
+import * as jwt from 'jsonwebtoken';
 import { AppModule } from './app.module';
 
 export async function createApp() {
@@ -59,6 +60,7 @@ export async function createApp() {
     'http://localhost:3001',
     'http://localhost:3002',
     'http://localhost:3003',
+    'http://localhost:3004',
     'http://localhost:3005',
   ];
   app.enableCors({
@@ -90,6 +92,10 @@ export async function createApp() {
     throw new Error('ELEX_CONNECTION_STRING is not set — required by PostGraphile');
   }
   const isDev = configService.get<string>('NODE_ENV') !== 'production';
+  const jwtSecret = configService.get<string>('ELEX_JWT_SECRET');
+  if (!jwtSecret) {
+    throw new Error('ELEX_JWT_SECRET is not set — required for PostGraphile RLS');
+  }
   expressApp.use(
     postgraphile(connectionString, 'public', {
       graphqlRoute: '/graphql',
@@ -102,11 +108,24 @@ export async function createApp() {
       ignoreRBAC: false,
       legacyRelations: 'omit',
       enableQueryBatching: true,
-      // Read-only for now — admin doesn't need auto-mutations yet, and exposing
-      // them through GraphQL with no role check would be a footgun. Re-enable
-      // (and add a JWT/pgSettings hook for RLS) when admin write flows land.
-      disableDefaultMutations: true,
+      disableDefaultMutations: false,
       appendPlugins: [ConnectionFilterPlugin],
+      // Inject JWT claims into the DB session so RLS policies can evaluate
+      // current_user_id() and current_user_role() correctly on every request.
+      pgSettings: async (req) => {
+        const authHeader = (req.headers as Record<string, string>)['authorization'];
+        if (!authHeader?.startsWith('Bearer ')) return {};
+        try {
+          const token = authHeader.slice(7);
+          const payload = jwt.verify(token, jwtSecret) as { sub: string; role: string };
+          return {
+            'app.current_user_id': payload.sub,
+            'app.current_user_role': payload.role,
+          };
+        } catch {
+          return {};
+        }
+      },
       // Surface DB errors verbatim in dev for easier debugging; trim in prod.
       extendedErrors: isDev
         ? ['hint', 'detail', 'errcode']
