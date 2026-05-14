@@ -224,7 +224,7 @@ export class ListingsService {
        JOIN trader_profiles tp       ON tp.id = l.trader_profile_id
        JOIN users u                  ON u.id  = tp.user_id
        WHERE (l.id::text = $1 OR l.listing_code = $1)
-         AND l.status = 'ACTIVE' AND l.expires_at > NOW()`,
+         AND l.status != 'CLOSED' AND l.expires_at > NOW()`,
       [id],
     );
     if (!res.rows.length) throw new NotFoundException('Listing not found');
