@@ -26,7 +26,7 @@ export class ListingsController {
     return this.listingsService.create(req.user.userId, req.user.role, dto);
   }
 
-  /** GET /listings?intent=WTS&stock_type=MASTER_CARTON&price_min=0&price_max=100000&search=iphone&limit=50&offset=0 — public */
+  /** GET /listings?intent=WTS&brand_id=uuid1,uuid2&category_id=uuid&stock_type=MASTER_CARTON&price_min=0&price_max=100000&search=iphone&limit=50&offset=0 — public */
   @Get()
   async findAll(
     @Query('intent') intent?: string,
@@ -34,6 +34,8 @@ export class ListingsController {
     @Query('price_min') price_min?: string,
     @Query('price_max') price_max?: string,
     @Query('search') search?: string,
+    @Query('brand_id') brand_id?: string,
+    @Query('category_id') category_id?: string,
     @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit?: number,
     @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset?: number,
   ) {
@@ -43,6 +45,8 @@ export class ListingsController {
       price_min ? Number(price_min) : undefined,
       price_max ? Number(price_max) : undefined,
       search,
+      brand_id,
+      category_id,
       limit,
       offset,
     );
