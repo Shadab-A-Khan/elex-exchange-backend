@@ -233,7 +233,7 @@ export class ListingsService {
          l.id, l.listing_code, l.intent, l.stock_type,
          l.quantity, l.price_per_unit, l.currency,
          l.description, l.status, l.expires_at, l.created_at,
-         l.category_id, l.brand_id, l.variant_id,
+         l.category_id, l.brand_id, l.variant_id, l.trader_profile_id,
          p.name             AS product_name,
          b.name             AS brand_name,
          pc.name            AS category_name,
