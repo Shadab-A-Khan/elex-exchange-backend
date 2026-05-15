@@ -110,6 +110,9 @@ export class ListingsService {
     search?: string,
     brand_id?: string,
     category_id?: string,
+    spec_region?: string,
+    city?: string,
+    verified_only?: boolean,
     limit = 50,
     offset = 0,
   ) {
@@ -170,6 +173,21 @@ export class ListingsService {
       whereClauses.push(`l.category_id = ANY(ARRAY[${placeholders.join(',')}]::uuid[])`);
     }
 
+    if (spec_region === 'INDIA') {
+      whereClauses.push(`pv.variant_attributes->'countries' @> '"India"'`);
+    } else if (spec_region === 'GLOBAL') {
+      whereClauses.push(`(pv.variant_attributes ? 'countries') AND NOT (pv.variant_attributes->'countries' @> '"India"')`);
+    }
+
+    if (city?.trim()) {
+      params.push(`%${city.trim()}%`);
+      whereClauses.push(`l.city ILIKE $${params.length}`);
+    }
+
+    if (verified_only) {
+      whereClauses.push(`tp.kyc_status = 'APPROVED'`);
+    }
+
     params.push(limit, offset);
 
     const res = await this.db.query(
@@ -186,7 +204,15 @@ export class ListingsService {
          tp.trader_code,
          tp.whatsapp_number  AS phone,
          tp.city,
-         tp.kyc_status
+         tp.kyc_status,
+         (SELECT COUNT(*)::int FROM listings l2
+          WHERE l2.variant_id = l.variant_id
+            AND l2.variant_id IS NOT NULL
+            AND l2.intent != l.intent
+            AND l2.status = 'ACTIVE'
+            AND l2.expires_at > NOW()
+            AND l2.trader_profile_id != l.trader_profile_id
+         ) AS match_count
        FROM listings l
        JOIN products p                ON p.id  = l.product_id
        LEFT JOIN brands b             ON b.id  = l.brand_id
@@ -207,8 +233,10 @@ export class ListingsService {
          l.id, l.listing_code, l.intent, l.stock_type,
          l.quantity, l.price_per_unit, l.currency,
          l.description, l.status, l.expires_at, l.created_at,
+         l.category_id, l.brand_id, l.variant_id,
          p.name             AS product_name,
          b.name             AS brand_name,
+         pc.name            AS category_name,
          pv.name            AS variant_name,
          pv.variant_attributes,
          tp.company_name    AS trader,
@@ -220,6 +248,7 @@ export class ListingsService {
        FROM listings l
        JOIN products p               ON p.id  = l.product_id
        LEFT JOIN brands b            ON b.id  = l.brand_id
+       LEFT JOIN product_categories pc ON pc.id = l.category_id
        LEFT JOIN product_variants pv ON pv.id = l.variant_id
        JOIN trader_profiles tp       ON tp.id = l.trader_profile_id
        JOIN users u                  ON u.id  = tp.user_id
