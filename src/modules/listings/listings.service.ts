@@ -111,7 +111,7 @@ export class ListingsService {
       }
       if (vals.length) {
         const placeholders = vals.map((v) => { params.push(v); return `$${params.length}`; });
-        whereClauses.push(`l.stock_type = ANY(ARRAY[${placeholders.join(',')}])`);
+        whereClauses.push(`l.stock_type = ANY(ARRAY[${placeholders.join(',')}]::listing_stock_type[])`);
       }
     }
 
@@ -145,12 +145,14 @@ export class ListingsService {
          tp.trader_code,
          tp.whatsapp_number AS phone,
          tp.city,
-         tp.kyc_status
+         tp.kyc_status,
+         u.email           AS trader_email
        FROM listings l
        JOIN products p              ON p.id  = l.product_id
        LEFT JOIN brands b           ON b.id  = l.brand_id
        LEFT JOIN product_variants pv ON pv.id = l.variant_id
        JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       JOIN users u                 ON u.id  = tp.user_id
        WHERE ${whereClauses.join(' AND ')}
        ORDER BY l.created_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -173,14 +175,16 @@ export class ListingsService {
          tp.trader_code,
          tp.whatsapp_number AS phone,
          tp.city,
-         tp.kyc_status
+         tp.kyc_status,
+         u.email           AS trader_email
        FROM listings l
        JOIN products p              ON p.id  = l.product_id
        LEFT JOIN brands b           ON b.id  = l.brand_id
        LEFT JOIN product_variants pv ON pv.id = l.variant_id
        JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       JOIN users u                 ON u.id  = tp.user_id
        WHERE (l.id::text = $1 OR l.listing_code = $1)
-         AND l.status = 'ACTIVE' AND l.expires_at > NOW()`,
+         AND l.status IN ('ACTIVE', 'PAUSED') AND l.expires_at > NOW()`,
       [id],
     );
     if (!res.rows.length) throw new NotFoundException('Listing not found');
@@ -220,4 +224,5 @@ export class ListingsService {
     );
     return res.rows;
   }
+
 }
