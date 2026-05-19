@@ -2,10 +2,12 @@ import {
   Controller, Post, Get, Param, Body, Query,
   UseGuards, Request, ParseIntPipe, DefaultValuePipe,
 } from '@nestjs/common';
+import { SkipThrottle } from '@nestjs/throttler';
 import { ListingsService } from './listings.service';
 import { CreateListingDto } from './dto/listing.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 
+@SkipThrottle()
 @Controller('listings')
 export class ListingsController {
   constructor(private listingsService: ListingsService) {}
@@ -63,4 +65,5 @@ export class ListingsController {
   async findOne(@Param('id') id: string) {
     return this.listingsService.findOne(id);
   }
+
 }

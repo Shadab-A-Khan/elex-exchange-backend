@@ -100,16 +100,6 @@ export class AuthController {
 
   @SkipThrottle()
   @UseGuards(JwtAuthGuard)
-  @Post('profile')
-  async getProfile(@Request() req: any) {
-    return {
-      user: req.user,
-      message: 'Profile retrieved successfully',
-    };
-  }
-
-  @SkipThrottle()
-  @UseGuards(JwtAuthGuard)
   @Post('change-email/send-otp')
   async changeEmailSendOtp(@Request() req: any, @Body() dto: ChangeEmailSendOtpDto) {
     return this.authService.changeEmailSendOtp(req.user.userId, dto);

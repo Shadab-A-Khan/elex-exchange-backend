@@ -25,30 +25,11 @@ export class ListingsService {
       if (!profileRes.rows.length) {
         throw new ForbiddenException('Trader profile not found for this user');
       }
-      const { id: traderProfileId, city: profileCity, state: profileState } = profileRes.rows[0];
-      const city  = dto.city?.trim()  || profileCity
-      const state = dto.state?.trim() || profileState
+      const { id: traderProfileId, city, state } = profileRes.rows[0];
       if (!city || !state) {
         throw new BadRequestException(
           'Complete your trader profile (city and state) before posting a listing',
         );
-      }
-
-      // Duplicate check — same trader, same variant, same intent, not yet expired
-      const dupRes = await client.query(
-        `SELECT listing_code FROM listings
-         WHERE trader_profile_id = $1
-           AND variant_id = $2
-           AND intent = $3
-           AND status IN ('DRAFT', 'ACTIVE', 'PAUSED')
-           AND expires_at > NOW()
-         LIMIT 1`,
-        [traderProfileId, dto.variant_id, dto.intent],
-      )
-      if (dupRes.rows.length) {
-        throw new BadRequestException(
-          `You already have an active listing for this product (${dupRes.rows[0].listing_code}). Edit or reactivate it instead.`,
-        )
       }
 
       // Resolve variant → product → category + brand
@@ -108,15 +89,9 @@ export class ListingsService {
     price_min?: number,
     price_max?: number,
     search?: string,
-    brand_id?: string,
-    category_id?: string,
-    spec_region?: string,
-    city?: string,
-    verified_only?: boolean,
     limit = 50,
     offset = 0,
   ) {
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const params: any[] = [];
     const whereClauses: string[] = [
       `l.status = 'ACTIVE'`,
@@ -155,39 +130,6 @@ export class ListingsService {
       whereClauses.push(`l.tsv @@ plainto_tsquery('simple', $${params.length})`);
     }
 
-    if (brand_id) {
-      const ids = brand_id.split(',').map((v) => v.trim()).filter(Boolean);
-      if (ids.some((id) => !UUID_RE.test(id))) {
-        throw new BadRequestException('brand_id must contain valid UUIDs');
-      }
-      const placeholders = ids.map((v) => { params.push(v); return `$${params.length}`; });
-      whereClauses.push(`l.brand_id = ANY(ARRAY[${placeholders.join(',')}]::uuid[])`);
-    }
-
-    if (category_id) {
-      const ids = category_id.split(',').map((v) => v.trim()).filter(Boolean);
-      if (ids.some((id) => !UUID_RE.test(id))) {
-        throw new BadRequestException('category_id must contain valid UUIDs');
-      }
-      const placeholders = ids.map((v) => { params.push(v); return `$${params.length}`; });
-      whereClauses.push(`l.category_id = ANY(ARRAY[${placeholders.join(',')}]::uuid[])`);
-    }
-
-    if (spec_region === 'INDIA') {
-      whereClauses.push(`pv.variant_attributes->'countries' @> '"India"'`);
-    } else if (spec_region === 'GLOBAL') {
-      whereClauses.push(`(pv.variant_attributes ? 'countries') AND NOT (pv.variant_attributes->'countries' @> '"India"')`);
-    }
-
-    if (city?.trim()) {
-      params.push(`%${city.trim()}%`);
-      whereClauses.push(`l.city ILIKE $${params.length}`);
-    }
-
-    if (verified_only) {
-      whereClauses.push(`tp.kyc_status = 'APPROVED'`);
-    }
-
     params.push(limit, offset);
 
     const res = await this.db.query(
@@ -195,30 +137,22 @@ export class ListingsService {
          l.id, l.listing_code, l.intent, l.stock_type,
          l.quantity, l.price_per_unit, l.currency,
          l.description, l.status, l.expires_at, l.created_at,
-         p.name              AS product_name,
-         b.name              AS brand_name,
-         pc.name             AS category_name,
-         pv.name             AS variant_name,
+         p.name            AS product_name,
+         b.name            AS brand_name,
+         pv.name           AS variant_name,
          pv.variant_attributes,
-         tp.company_name     AS trader,
+         tp.company_name   AS trader,
          tp.trader_code,
-         tp.whatsapp_number  AS phone,
+         tp.whatsapp_number AS phone,
          tp.city,
          tp.kyc_status,
-         (SELECT COUNT(*)::int FROM listings l2
-          WHERE l2.variant_id = l.variant_id
-            AND l2.variant_id IS NOT NULL
-            AND l2.intent != l.intent
-            AND l2.status = 'ACTIVE'
-            AND l2.expires_at > NOW()
-            AND l2.trader_profile_id != l.trader_profile_id
-         ) AS match_count
+         u.email           AS trader_email
        FROM listings l
-       JOIN products p                ON p.id  = l.product_id
-       LEFT JOIN brands b             ON b.id  = l.brand_id
-       LEFT JOIN product_categories pc ON pc.id = l.category_id
-       LEFT JOIN product_variants pv   ON pv.id = l.variant_id
-       JOIN trader_profiles tp         ON tp.id = l.trader_profile_id
+       JOIN products p              ON p.id  = l.product_id
+       LEFT JOIN brands b           ON b.id  = l.brand_id
+       LEFT JOIN product_variants pv ON pv.id = l.variant_id
+       JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       JOIN users u                 ON u.id  = tp.user_id
        WHERE ${whereClauses.join(' AND ')}
        ORDER BY l.created_at DESC
        LIMIT $${params.length - 1} OFFSET $${params.length}`,
@@ -233,27 +167,24 @@ export class ListingsService {
          l.id, l.listing_code, l.intent, l.stock_type,
          l.quantity, l.price_per_unit, l.currency,
          l.description, l.status, l.expires_at, l.created_at,
-         l.category_id, l.brand_id, l.variant_id, l.trader_profile_id,
-         p.name             AS product_name,
-         b.name             AS brand_name,
-         pc.name            AS category_name,
-         pv.name            AS variant_name,
+         p.name            AS product_name,
+         b.name            AS brand_name,
+         pv.name           AS variant_name,
          pv.variant_attributes,
-         tp.company_name    AS trader,
+         tp.company_name   AS trader,
          tp.trader_code,
          tp.whatsapp_number AS phone,
          tp.city,
          tp.kyc_status,
-         u.email            AS trader_email
+         u.email           AS trader_email
        FROM listings l
-       JOIN products p               ON p.id  = l.product_id
-       LEFT JOIN brands b            ON b.id  = l.brand_id
-       LEFT JOIN product_categories pc ON pc.id = l.category_id
+       JOIN products p              ON p.id  = l.product_id
+       LEFT JOIN brands b           ON b.id  = l.brand_id
        LEFT JOIN product_variants pv ON pv.id = l.variant_id
-       JOIN trader_profiles tp       ON tp.id = l.trader_profile_id
-       JOIN users u                  ON u.id  = tp.user_id
+       JOIN trader_profiles tp      ON tp.id = l.trader_profile_id
+       JOIN users u                 ON u.id  = tp.user_id
        WHERE (l.id::text = $1 OR l.listing_code = $1)
-         AND l.status != 'CLOSED' AND l.expires_at > NOW()`,
+         AND l.status IN ('ACTIVE', 'PAUSED') AND l.expires_at > NOW()`,
       [id],
     );
     if (!res.rows.length) throw new NotFoundException('Listing not found');
@@ -293,4 +224,5 @@ export class ListingsService {
     );
     return res.rows;
   }
+
 }

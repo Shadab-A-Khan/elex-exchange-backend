@@ -60,7 +60,6 @@ export async function createApp() {
     'http://localhost:3001',
     'http://localhost:3002',
     'http://localhost:3003',
-    'http://localhost:3004',
     'http://localhost:3005',
   ];
   app.enableCors({
@@ -92,15 +91,11 @@ export async function createApp() {
     throw new Error('ELEX_CONNECTION_STRING is not set — required by PostGraphile');
   }
   const isDev = configService.get<string>('NODE_ENV') !== 'production';
-  const jwtSecret = configService.get<string>('ELEX_JWT_SECRET');
-  if (!jwtSecret) {
-    throw new Error('ELEX_JWT_SECRET is not set — required for PostGraphile RLS');
-  }
   expressApp.use(
     postgraphile(connectionString, 'public', {
       graphqlRoute: '/graphql',
       graphiqlRoute: '/graphiql',
-      graphiql: true,
+      graphiql: isDev,
       enhanceGraphiql: isDev,
       watchPg: isDev,
       dynamicJson: true,
@@ -108,24 +103,26 @@ export async function createApp() {
       ignoreRBAC: false,
       legacyRelations: 'omit',
       enableQueryBatching: true,
-      disableDefaultMutations: false,
-      appendPlugins: [ConnectionFilterPlugin],
-      // Inject JWT claims into the DB session so RLS policies can evaluate
-      // current_user_id() and current_user_role() correctly on every request.
-      pgSettings: async (req) => {
-        const authHeader = (req.headers as Record<string, string>)['authorization'];
-        if (!authHeader?.startsWith('Bearer ')) return {};
+      pgSettings: async (req: any) => {
+        const auth = (req.headers?.authorization ?? '') as string;
+        if (!auth.startsWith('Bearer ')) return {};
+        const token = auth.slice(7);
         try {
-          const token = authHeader.slice(7);
-          const payload = jwt.verify(token, jwtSecret) as { sub: string; role: string };
+          const secret = configService.get<string>('ELEX_JWT_SECRET')!;
+          const payload = jwt.verify(token, secret) as unknown as {
+            sub: string;
+            role: string;
+          };
           return {
-            'app.current_user_id': payload.sub,
+            'app.current_user_id':   payload.sub,
             'app.current_user_role': payload.role,
           };
         } catch {
           return {};
         }
       },
+      disableDefaultMutations: false,
+      appendPlugins: [ConnectionFilterPlugin],
       // Surface DB errors verbatim in dev for easier debugging; trim in prod.
       extendedErrors: isDev
         ? ['hint', 'detail', 'errcode']
