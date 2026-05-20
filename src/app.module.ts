@@ -7,6 +7,7 @@ import { DatabaseModule } from './modules/database/database.module';
 import { MailModule } from './modules/mail/mail.module';
 import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
 import { ListingsModule } from './modules/listings/listings.module';
+import { DocumentsModule } from './modules/documents/documents.module';
 import { validate } from './config/env.validation';
 
 @Module({
@@ -22,6 +23,7 @@ import { validate } from './config/env.validation';
     MailModule,
     WhatsappModule,
     ListingsModule,
+    DocumentsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
