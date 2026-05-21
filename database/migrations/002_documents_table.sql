@@ -17,7 +17,6 @@
 -- migration. They are part of the base schema and are NOT created here.
 --
 --   Tables   : users, trader_profiles
---   Enums    : kyc_status              (used in trigger cast ::text::kyc_status)
 --   Functions: update_updated_at_column()  (used by documents_updated_at trigger)
 --              current_user_role()          (used by all RLS policies)
 --              current_user_id()            (used by all RLS policies)
@@ -50,7 +49,7 @@ CREATE TABLE documents (
   file_name           VARCHAR(500)  NOT NULL,
   file_size           INTEGER,
   mime_type           VARCHAR(100),
-  document_blob       BYTEA,
+  document_blob       BYTEA         NOT NULL,
   issuing_country     VARCHAR(100),
   issuing_authority   VARCHAR(255),
   expiry_date         DATE,
@@ -89,61 +88,6 @@ CREATE TRIGGER documents_updated_at
 -- ============================================================================
 
 COMMENT ON COLUMN documents.document_blob IS E'@omit';
-
--- ============================================================================
--- MIGRATION 003: sync documents.status → trader_profiles.kyc_status
---
--- Fires AFTER INSERT OR UPDATE OF status on documents.
---
--- Rules:
---   1. EXPIRED is skipped — kyc_status enum has no EXPIRED value.
---   2. Only applies when this row is the most recent document for the trader
---      (by created_at). An older doc being updated cannot overwrite the
---      kyc_status that a newer approved/rejected doc already set.
---   3. Syncs kyc_status, kyc_verified_at, verified_by, and rejection_reason
---      so trader_profiles stays fully in sync without a separate admin action.
---
--- SECURITY DEFINER: runs as the function owner (bypasses RLS on
--- trader_profiles) so the UPDATE always succeeds regardless of whether the
--- caller is a trader or admin.
--- ============================================================================
-
-CREATE OR REPLACE FUNCTION sync_document_status_to_kyc()
-RETURNS TRIGGER
-SECURITY DEFINER
-AS $$
-BEGIN
-  -- Skip EXPIRED — cannot cast to kyc_status enum (PENDING/APPROVED/REJECTED only)
-  IF NEW.status = 'EXPIRED' THEN
-    RETURN NEW;
-  END IF;
-
-  -- Only sync if this is the most recent document for the trader.
-  -- Prevents an older doc update from overwriting a newer doc's status.
-  IF EXISTS (
-    SELECT 1 FROM documents
-    WHERE trader_profile_id = NEW.trader_profile_id
-      AND id <> NEW.id
-      AND created_at > NEW.created_at
-  ) THEN
-    RETURN NEW;
-  END IF;
-
-  UPDATE trader_profiles
-  SET
-    kyc_status       = NEW.status::text::kyc_status,
-    kyc_verified_at  = CASE WHEN NEW.status = 'APPROVED' THEN COALESCE(NEW.verified_at, NOW()) ELSE NULL END,
-    verified_by      = CASE WHEN NEW.status IN ('APPROVED', 'REJECTED') THEN NEW.verified_by ELSE NULL END,
-    rejection_reason = CASE WHEN NEW.status = 'REJECTED' THEN NEW.rejection_reason ELSE NULL END
-  WHERE id = NEW.trader_profile_id;
-
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER documents_sync_kyc
-  AFTER INSERT OR UPDATE OF status ON documents
-  FOR EACH ROW EXECUTE FUNCTION sync_document_status_to_kyc();
 
 -- ============================================================================
 -- ROW-LEVEL SECURITY
