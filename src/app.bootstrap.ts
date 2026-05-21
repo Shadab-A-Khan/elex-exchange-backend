@@ -53,19 +53,17 @@ export async function createApp() {
     }),
   );
 
-  // CORS — allow configured origins, all *.vercel.app, and localhost.
-  const corsOrigins = [
-    ...(configService.get<string>('CORS_ORIGIN')?.split(',') || []),
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'http://localhost:3002',
-    'http://localhost:3003',
-    'http://localhost:3005',
-  ];
+  // CORS — allow configured origins, all *.vercel.app, and any localhost port.
+  const extraOrigins = (configService.get<string>('CORS_ORIGIN')?.split(',') || []).map((o) => o.trim()).filter(Boolean);
   app.enableCors({
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
-      if (origin.endsWith('.vercel.app') || corsOrigins.includes(origin)) {
+      if (
+        origin.endsWith('.vercel.app') ||
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('https://localhost:') ||
+        extraOrigins.includes(origin)
+      ) {
         return callback(null, true);
       }
       callback(new Error('Not allowed by CORS'));
