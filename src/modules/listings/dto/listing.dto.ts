@@ -15,8 +15,23 @@ export class CreateListingDto {
   @IsEnum(ListingIntent)
   intent!: ListingIntent;
 
+  // Phone listings: variant_id resolves product/category/brand automatically
   @IsUUID()
-  variant_id!: string;
+  @IsOptional()
+  variant_id?: string;
+
+  // Laptop / accessory listings: category_slug + optional brand_name + product_name
+  @IsString()
+  @IsOptional()
+  category_slug?: string;
+
+  @IsString()
+  @IsOptional()
+  brand_name?: string;
+
+  @IsString()
+  @IsOptional()
+  product_name?: string;
 
   @IsInt()
   @Min(1)

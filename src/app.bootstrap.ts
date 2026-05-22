@@ -121,6 +121,9 @@ export async function createApp() {
       },
       disableDefaultMutations: false,
       appendPlugins: [ConnectionFilterPlugin],
+      graphileBuildOptions: {
+        connectionFilterRelations: true,
+      },
       // Surface DB errors verbatim in dev for easier debugging; trim in prod.
       extendedErrors: isDev
         ? ['hint', 'detail', 'errcode']

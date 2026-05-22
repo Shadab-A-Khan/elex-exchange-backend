@@ -7,17 +7,13 @@ export class ListingsService {
   constructor(private db: DatabaseService) {}
 
   async create(userId: string, role: string, dto: CreateListingDto) {
-    if (dto.intent === ListingIntent.WTS && !dto.price_per_unit) {
-      throw new BadRequestException('price_per_unit is required for WTS listings');
-    }
-
     const client = await this.db.getClient();
     try {
       await client.query('BEGIN');
       await client.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId]);
       await client.query(`SELECT set_config('app.current_user_role', $1, true)`, [role]);
 
-      // Fetch trader profile — need id, city, state for the listing row
+      // Fetch trader profile — need id for the listing row; city/state used as fallback
       const profileRes = await client.query(
         `SELECT id, city, state FROM trader_profiles WHERE user_id = $1 LIMIT 1`,
         [userId],
@@ -25,33 +21,66 @@ export class ListingsService {
       if (!profileRes.rows.length) {
         throw new ForbiddenException('Trader profile not found for this user');
       }
-      const { id: traderProfileId, city, state } = profileRes.rows[0];
-      if (!city || !state) {
-        throw new BadRequestException(
-          'Complete your trader profile (city and state) before posting a listing',
+      const { id: traderProfileId, city: profileCity, state: profileState } = profileRes.rows[0];
+
+      let product_id: string | null = null;
+      let variant_id: string | null = null;
+      let category_id: string | null = null;
+      let brand_id: string | null = null;
+
+      if (dto.variant_id) {
+        // Phone path: resolve everything via variant → product
+        const variantRes = await client.query(
+          `SELECT pv.id AS variant_id, pv.product_id, p.category_id, p.brand_id
+           FROM product_variants pv
+           JOIN products p ON p.id = pv.product_id
+           WHERE pv.id = $1 AND pv.is_active = TRUE AND p.status = 'ACTIVE'`,
+          [dto.variant_id],
         );
+        if (!variantRes.rows.length) {
+          throw new BadRequestException('Invalid or inactive product variant');
+        }
+        product_id = variantRes.rows[0].product_id;
+        variant_id = variantRes.rows[0].variant_id;
+        category_id = variantRes.rows[0].category_id;
+        brand_id = variantRes.rows[0].brand_id ?? null;
+      } else {
+        // Laptop / accessory path: resolve category by slug, brand by name
+        if (dto.category_slug) {
+          const catRes = await client.query(
+            `SELECT id FROM product_categories WHERE slug = $1 AND is_active = TRUE LIMIT 1`,
+            [dto.category_slug],
+          );
+          if (!catRes.rows.length) {
+            throw new BadRequestException(`Category '${dto.category_slug}' not found`);
+          }
+          category_id = catRes.rows[0].id;
+        } else {
+          throw new BadRequestException('category_slug is required for non-phone listings');
+        }
+        if (dto.brand_name) {
+          const brandRes = await client.query(
+            `SELECT id FROM brands WHERE name = $1 AND is_active = TRUE LIMIT 1`,
+            [dto.brand_name],
+          );
+          if (brandRes.rows.length) brand_id = brandRes.rows[0].id;
+        }
       }
 
-      // Resolve variant → product → category + brand
-      const variantRes = await client.query(
-        `SELECT pv.id AS variant_id, pv.product_id, p.category_id, p.brand_id
-         FROM product_variants pv
-         JOIN products p ON p.id = pv.product_id
-         WHERE pv.id = $1 AND pv.is_active = TRUE AND p.status = 'ACTIVE'`,
-        [dto.variant_id],
-      );
-      if (!variantRes.rows.length) {
-        throw new BadRequestException('Invalid or inactive product variant');
+      const city  = dto.city?.trim()  || profileCity  || null;
+      const state = dto.state?.trim() || profileState || null;
+
+      if (!city || !state) {
+        throw new BadRequestException('city and state are required — set them in your profile or provide them in the listing form');
       }
-      const { product_id, category_id, brand_id } = variantRes.rows[0];
 
       const res = await client.query(
         `INSERT INTO listings
            (trader_profile_id, intent,
-            product_id, variant_id, category_id, brand_id,
+            product_id, variant_id, category_id, brand_id, product_name,
             stock_type, quantity, price_per_unit, currency,
             city, state, description)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
          RETURNING
            id, listing_code, intent, stock_type, quantity,
            price_per_unit, currency, city, state,
@@ -60,9 +89,10 @@ export class ListingsService {
           traderProfileId,
           dto.intent,
           product_id,
-          dto.variant_id,
+          variant_id,
           category_id,
-          brand_id   ?? null,
+          brand_id,
+          dto.product_name ?? null,
           dto.stock_type   ?? 'MASTER_CARTON',
           dto.quantity,
           dto.price_per_unit ?? null,
