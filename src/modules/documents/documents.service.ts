@@ -6,10 +6,14 @@ import {
 } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { UpdateDocumentStatusDto, DocumentStatus } from './dto/document.dto';
+import { MailService } from '../mail/mail.service';
 
 @Injectable()
 export class DocumentsService {
-  constructor(private db: DatabaseService) {}
+  constructor(
+    private db: DatabaseService,
+    private mail: MailService,
+  ) {}
 
   // ─── Upload ────────────────────────────────────────────────────────────────
   // Inserts the file as a BYTEA blob into documents with status = 'PENDING'.
@@ -126,7 +130,7 @@ export class DocumentsService {
            verified_by      = $3,
            verified_at      = NOW()
          WHERE id = $4
-         RETURNING id, status, rejection_reason, verified_by, verified_at, trader_profile_id`,
+         RETURNING id, status, rejection_reason, verified_by, verified_at, trader_profile_id, document_type`,
         [
           dto.status,
           dto.status === DocumentStatus.REJECTED ? dto.rejectionReason!.trim() : null,
@@ -137,8 +141,33 @@ export class DocumentsService {
 
       if (!result.rows.length) throw new NotFoundException('Document not found');
 
+      const { trader_profile_id, status, rejection_reason, document_type } = result.rows[0];
+
+      // Fetch trader email + name for the notification
+      const traderRes = await client.query(
+        `SELECT u.email, u.first_name, u.last_name, tp.company_name
+         FROM trader_profiles tp
+         JOIN users u ON u.id = tp.user_id
+         WHERE tp.id = $1 LIMIT 1`,
+        [trader_profile_id],
+      );
+
       await client.query('COMMIT');
       // DB trigger fires here → trader_profiles.kyc_status synced automatically
+
+      // Send email notification (non-blocking — don't fail the request if email fails)
+      if (traderRes.rows.length) {
+        const { email, first_name, last_name, company_name } = traderRes.rows[0];
+        const name = company_name || [first_name, last_name].filter(Boolean).join(' ') || email;
+        this.mail.sendDocumentStatusEmail({
+          to:              email,
+          name,
+          documentType:    document_type,
+          status:          status === DocumentStatus.APPROVED ? 'VERIFIED' : 'REJECTED',
+          rejectionReason: rejection_reason ?? undefined,
+        }).catch(() => { /* silent — email failure must not roll back the status update */ });
+      }
+
       return result.rows[0];
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
