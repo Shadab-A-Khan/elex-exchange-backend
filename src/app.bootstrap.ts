@@ -59,6 +59,7 @@ export async function createApp() {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (
+        origin === 'https://elex-exchange-web-production.up.railway.app' ||
         origin.endsWith('.vercel.app') ||
         origin.startsWith('http://localhost:') ||
         origin.startsWith('https://localhost:') ||
