@@ -84,10 +84,24 @@ export async function createApp() {
   // PostGraphile (allUsers, traderProfileByUserId, filter:{equalTo:…}) which
   // matches our `public` schema 1:1. Mounted on the underlying Express app so
   // it lives alongside the Nest REST controllers (auth, trader, listings…).
-  const connectionString = configService.get<string>('ELEX_CONNECTION_STRING');
-  if (!connectionString) {
-    throw new Error('ELEX_CONNECTION_STRING is not set — required by PostGraphile');
-  }
+  //const connectionString = configService.get<string>('ELEX_CONNECTION_STRING');
+  // if (!connectionString) {
+  //   throw new Error('ELEX_CONNECTION_STRING is not set — required by PostGraphile');
+  // }
+  
+const connectionString = configService.get<string>('ELEX_CONNECTION_STRING');
+
+if (!connectionString) {
+  throw new Error('ELEX_CONNECTION_STRING is not set — required by PostGraphile');
+}
+
+try {
+  const parsedDbUrl = new URL(connectionString);
+  console.log('[DB Diagnostic] PostGraphile hostname:', parsedDbUrl.hostname);
+} catch {
+  throw new Error('ELEX_CONNECTION_STRING is not a valid database URL');
+}
+
   const isDev = configService.get<string>('NODE_ENV') !== 'production';
   expressApp.use(
     postgraphile(connectionString, 'public', {
